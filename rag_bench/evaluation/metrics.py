@@ -1,0 +1,306 @@
+"""
+Metrics for evaluating RAG systems.
+"""
+import logging
+import time
+from typing import List, Dict, Any, Optional, Callable
+
+import numpy as np
+from pydantic import BaseModel, Field
+
+from rag_bench.core.types import LLMComponent
+from rag_bench.core.types import DocumentWithScore
+
+logger = logging.getLogger(__name__)
+
+
+class QueryMetrics(BaseModel):
+    """Metrics for a single query."""
+    query_id: str
+    query: str
+    total_time_ms: float
+    retrieval_time_ms: float
+    generation_time_ms: float
+    num_docs_retrieved: int
+    num_docs_used: int
+    doc_scores: List[float]
+    answer_quality: Optional[float] = None
+    retrieval_precision: Optional[float] = None
+    retrieval_recall: Optional[float] = None
+    answer_correctness: Optional[float] = None
+    answer_completeness: Optional[float] = None
+    answer_conciseness: Optional[float] = None
+    answer_groundedness: Optional[float] = None
+    answer_helpfulness: Optional[float] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EvaluationSet(BaseModel):
+    """A set of queries and expected answers for evaluation."""
+    name: str
+    description: str
+    queries: List[Dict[str, Any]]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    
+    class Config:
+        json_encoders = {
+            "queries": lambda v: [dict(q) for q in v]
+        }
+
+
+class EvaluationResults(BaseModel):
+    """Results of an evaluation run."""
+    evaluation_set_name: str
+    configuration: Dict[str, Any]
+    query_metrics: List[QueryMetrics]
+    mean_total_time_ms: float = 0
+    mean_retrieval_time_ms: float = 0
+    mean_generation_time_ms: float = 0
+    mean_num_docs_retrieved: float = 0
+    mean_num_docs_used: float = 0
+    mean_doc_score: float = 0
+    mean_answer_quality: Optional[float] = None
+    mean_retrieval_precision: Optional[float] = None
+    mean_retrieval_recall: Optional[float] = None
+    mean_answer_correctness: Optional[float] = None
+    mean_answer_completeness: Optional[float] = None
+    mean_answer_conciseness: Optional[float] = None
+    mean_answer_groundedness: Optional[float] = None
+    mean_answer_helpfulness: Optional[float] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    
+    def compute_aggregates(self):
+        """Compute aggregate metrics from individual query metrics."""
+        metrics = self.query_metrics
+        
+        if not metrics:
+            return
+        
+        self.mean_total_time_ms = np.mean([m.total_time_ms for m in metrics])
+        self.mean_retrieval_time_ms = np.mean([m.retrieval_time_ms for m in metrics])
+        self.mean_generation_time_ms = np.mean([m.generation_time_ms for m in metrics])
+        self.mean_num_docs_retrieved = np.mean([m.num_docs_retrieved for m in metrics])
+        self.mean_num_docs_used = np.mean([m.num_docs_used for m in metrics])
+        self.mean_doc_score = np.mean([np.mean(m.doc_scores) if m.doc_scores else 0 for m in metrics])
+        
+        # Compute means for optional metrics if available
+        if all(m.answer_quality is not None for m in metrics):
+            self.mean_answer_quality = np.mean([m.answer_quality for m in metrics if m.answer_quality is not None])
+        
+        if all(m.retrieval_precision is not None for m in metrics):
+            self.mean_retrieval_precision = np.mean([m.retrieval_precision for m in metrics if m.retrieval_precision is not None])
+        
+        if all(m.retrieval_recall is not None for m in metrics):
+            self.mean_retrieval_recall = np.mean([m.retrieval_recall for m in metrics if m.retrieval_recall is not None])
+        
+        if all(m.answer_correctness is not None for m in metrics):
+            self.mean_answer_correctness = np.mean([m.answer_correctness for m in metrics if m.answer_correctness is not None])
+        
+        if all(m.answer_completeness is not None for m in metrics):
+            self.mean_answer_completeness = np.mean([m.answer_completeness for m in metrics if m.answer_completeness is not None])
+        
+        if all(m.answer_conciseness is not None for m in metrics):
+            self.mean_answer_conciseness = np.mean([m.answer_conciseness for m in metrics if m.answer_conciseness is not None])
+        
+        if all(m.answer_groundedness is not None for m in metrics):
+            self.mean_answer_groundedness = np.mean([m.answer_groundedness for m in metrics if m.answer_groundedness is not None])
+        
+        if all(m.answer_helpfulness is not None for m in metrics):
+            self.mean_answer_helpfulness = np.mean([m.answer_helpfulness for m in metrics if m.answer_helpfulness is not None])
+
+
+class LLMBasedEvaluator:
+    """Evaluates RAG output using an LLM."""
+    
+    ANSWER_EVAL_TEMPLATE = """
+    You are an expert evaluator for retrieval-augmented generation (RAG) systems.
+    You will be given a query, the expected answer, and the actual answer generated by the RAG system.
+    Your task is to evaluate the actual answer on the following dimensions:
+    
+    1. Correctness (0-10): Is the information in the answer factually correct?
+    2. Completeness (0-10): Does the answer fully address all aspects of the query?
+    3. Conciseness (0-10): Is the answer appropriately concise without unnecessary information?
+    4. Groundedness (0-10): Is the answer well-grounded in the retrieved documents?
+    5. Helpfulness (0-10): Overall, how helpful is the answer to the user who asked the question?
+    
+    Query: {query}
+    
+    Expected Answer: {expected_answer}
+    
+    Actual Answer: {actual_answer}
+    
+    Evaluate the answer on each dimension and return your evaluation in the following format:
+    correctness: [score]
+    completeness: [score]
+    conciseness: [score]
+    groundedness: [score]
+    helpfulness: [score]
+    
+    IMPORTANT: Return ONLY the scores in the format specified above, with no additional explanation.
+    """
+    
+    def __init__(self, llm_component: LLMComponent):
+        """
+        Initialize with an LLM component.
+        
+        Args:
+            llm_component: Component for LLM operations
+        """
+        self.llm_component = llm_component
+    
+    async def evaluate_answer(
+        self, 
+        query: str, 
+        actual_answer: str, 
+        expected_answer: str
+    ) -> Dict[str, float]:
+        """
+        Evaluate an answer using the LLM.
+        
+        Args:
+            query: The original query
+            actual_answer: The answer generated by the RAG system
+            expected_answer: The expected answer
+            
+        Returns:
+            Dictionary of evaluation metrics
+        """
+        try:
+            response = await self.llm_component.agenerate(
+                template=self.ANSWER_EVAL_TEMPLATE,
+                query=query,
+                actual_answer=actual_answer,
+                expected_answer=expected_answer
+            )
+            
+            # Parse the evaluation scores
+            metrics = {}
+            for line in response.strip().split('\n'):
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    try:
+                        metrics[key.strip()] = float(value.strip())
+                    except ValueError:
+                        logger.warning(f"Could not parse score for {key}: {value}")
+            
+            # Scale scores to 0-1 range
+            return {k: v / 10.0 for k, v in metrics.items()}
+            
+        except Exception as e:
+            logger.error(f"Error in LLM evaluation: {str(e)}")
+            return {}
+
+
+class RetrievalEvaluator:
+    """Evaluates the quality of document retrieval."""
+    
+    def calculate_precision_recall(
+        self, 
+        retrieved_docs: List[DocumentWithScore],
+        relevant_doc_ids: List[str]
+    ) -> Dict[str, float]:
+        """
+        Calculate precision and recall for document retrieval.
+        
+        Args:
+            retrieved_docs: Documents retrieved by the system
+            relevant_doc_ids: IDs of documents that are known to be relevant
+            
+        Returns:
+            Dictionary with precision and recall scores
+        """
+        retrieved_ids = [
+            doc.document.metadata.get("id", "") 
+            for doc in retrieved_docs
+        ]
+        
+        # Count true positives (documents that were both retrieved and relevant)
+        true_positives = len(set(retrieved_ids).intersection(set(relevant_doc_ids)))
+        
+        # Calculate precision and recall
+        precision = true_positives / len(retrieved_ids) if retrieved_ids else 0
+        recall = true_positives / len(relevant_doc_ids) if relevant_doc_ids else 0
+        
+        return {
+            "precision": precision,
+            "recall": recall
+        }
+
+
+class MetricsCollector:
+    """Collects metrics during RAG pipeline execution."""
+    
+    def __init__(self):
+        """Initialize the metrics collector."""
+        self.reset()
+    
+    def reset(self):
+        """Reset all metrics."""
+        self.query_id = None
+        self.query = None
+        self.start_time = None
+        self.retrieval_start_time = None
+        self.retrieval_end_time = None
+        self.generation_start_time = None
+        self.generation_end_time = None
+        self.retrieved_docs = []
+        self.used_docs = []
+        self.metadata = {}
+    
+    def start_query(self, query_id: str, query: str):
+        """Start tracking a new query."""
+        self.reset()
+        self.query_id = query_id
+        self.query = query
+        self.start_time = time.time()
+    
+    def start_retrieval(self):
+        """Mark the start of document retrieval."""
+        self.retrieval_start_time = time.time()
+    
+    def end_retrieval(self, retrieved_docs: List[DocumentWithScore]):
+        """Mark the end of document retrieval and record retrieved documents."""
+        self.retrieval_end_time = time.time()
+        self.retrieved_docs = retrieved_docs
+    
+    def start_generation(self):
+        """Mark the start of answer generation."""
+        self.generation_start_time = time.time()
+    
+    def end_generation(self, used_docs: List[DocumentWithScore]):
+        """Mark the end of answer generation and record used documents."""
+        self.generation_end_time = time.time()
+        self.used_docs = used_docs
+    
+    def add_metadata(self, key: str, value: Any):
+        """Add custom metadata to the metrics."""
+        self.metadata[key] = value
+    
+    def get_metrics(self) -> QueryMetrics:
+        """Get the collected metrics for the current query."""
+        # Calculate times in milliseconds
+        end_time = time.time()
+        total_time_ms = (end_time - self.start_time) * 1000 if self.start_time else 0
+        
+        retrieval_time_ms = 0
+        if self.retrieval_start_time and self.retrieval_end_time:
+            retrieval_time_ms = (self.retrieval_end_time - self.retrieval_start_time) * 1000
+        
+        generation_time_ms = 0
+        if self.generation_start_time and self.generation_end_time:
+            generation_time_ms = (self.generation_end_time - self.generation_start_time) * 1000
+        
+        # Get document scores
+        doc_scores = [doc.score for doc in self.used_docs]
+        
+        return QueryMetrics(
+            query_id=self.query_id,
+            query=self.query,
+            total_time_ms=total_time_ms,
+            retrieval_time_ms=retrieval_time_ms,
+            generation_time_ms=generation_time_ms,
+            num_docs_retrieved=len(self.retrieved_docs),
+            num_docs_used=len(self.used_docs),
+            doc_scores=doc_scores,
+            metadata=self.metadata
+        )

@@ -1,0 +1,31 @@
+{
+  "name": "rag_benchmark_basic",
+  "description": "Basic RAG benchmark comparing different retrieval and processing configurations",
+  "evaluation_set_path": "rag_bench/evaluation/sample_data/general_knowledge_questions.json",
+  "output_dir": "benchmark_results",
+  "use_llm_evaluation": true,
+  "num_iterations": 1,
+  "configurations": [
+    {
+      "name": "baseline",
+      "description": "Baseline configuration with default settings",
+      "similarity_top_k": 3,
+      "similarity_threshold": 0.7,
+      "use_reranking": false,
+      "use_query_expansion": false
+    },
+    {
+      "name": "with_query_expansion",
+      "description": "Baseline with query expansion enabled",
+      "similarity_top_k": 3,
+      "similarity_threshold": 0.7,
+      "use_reranking": false,
+      "use_query_expansion": true,
+      "query_expansion_type": "llm"
+    }
+  ],
+  "metadata": {
+    "created_at": "2024-02-25",
+    "version": "1.0"
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "name": "General Knowledge Questions",
+  "description": "Sample general knowledge questions for benchmarking RAG systems",
+  "queries": [
+    {
+      "id": "gen-001",
+      "query": "What are the key components of a RAG system?",
+      "expected_answer": "The key components of a Retrieval Augmented Generation (RAG) system include: 1) Document ingestion pipeline for processing and storing documents; 2) Embedding component for converting text to vector representations; 3) Vector store for efficient similarity search; 4) Retrieval component that finds relevant documents based on queries; 5) Query enhancement mechanisms to improve retrieval; 6) Document post-processing for filtering and reranking; 7) LLM component for generating answers based on retrieved context; and 8) Evaluation framework to measure system performance.",
+      "relevant_doc_ids": ["doc-rag-overview-1", "doc-rag-architecture-1"]
+    },
+    {
+      "id": "gen-002",
+      "query": "How do embedding models work?",
+      "expected_answer": "Embedding models work by converting text (words, sentences, or documents) into dense vector representations in a high-dimensional space. These models are typically neural networks trained on large text corpora to capture semantic meaning. The training process often uses techniques like contrastive learning, where similar texts are mapped to nearby points in the vector space while dissimilar texts are pushed apart. The resulting embeddings preserve semantic relationships, allowing operations like similarity comparisons (using cosine similarity or Euclidean distance) and even semantic arithmetic. Modern embedding models can effectively capture context, nuance, and domain-specific concepts, making them valuable for search, recommendation, classification, and retrieval tasks.",
+      "relevant_doc_ids": ["doc-embeddings-1", "doc-vector-representations-1"]
+    },
+    {
+      "id": "gen-003",
+      "query": "What is the difference between sparse and dense retrieval?",
+      "expected_answer": "Sparse retrieval and dense retrieval differ in how they represent and match documents to queries. Sparse retrieval methods like BM25 or TF-IDF use term-based representations where each dimension corresponds to a word in the vocabulary, resulting in high-dimensional, sparse vectors with most values being zero. These methods focus on lexical matching (exact or stemmed words). In contrast, dense retrieval uses neural networks to create low-dimensional, dense vector representations (embeddings) that capture semantic meaning. Dense retrieval can identify relevant documents even when they use different terminology from the query, enabling semantic matching rather than just lexical matching. Modern systems often combine both approaches to leverage their complementary strengths.",
+      "relevant_doc_ids": ["doc-retrieval-methods-1", "doc-information-retrieval-1"]
+    },
+    {
+      "id": "gen-004",
+      "query": "What are the common challenges in RAG systems?",
+      "expected_answer": "Common challenges in RAG systems include: 1) Retrieval quality issues, where relevant information isn't found or irrelevant information is retrieved; 2) Hallucinations, where the LLM generates incorrect information not supported by retrieved documents; 3) Context window limitations that restrict how much retrieved content can be used; 4) Handling complex or multi-hop queries that require information synthesis across documents; 5) Balancing precision and recall in retrieval; 6) Document preprocessing challenges like effective chunking strategies; 7) Latency and computational resource constraints; 8) Domain adaptation for specialized knowledge; 9) Evaluation difficulties in measuring RAG quality objectively; and 10) Keeping knowledge up-to-date as information changes.",
+      "relevant_doc_ids": ["doc-rag-challenges-1", "doc-rag-limitations-1"]
+    },
+    {
+      "id": "gen-005",
+      "query": "How can query expansion improve RAG performance?",
+      "expected_answer": "Query expansion improves RAG performance by enriching the original query with additional terms or context to increase the likelihood of matching relevant documents. Methods include: 1) Adding synonyms and related terms to improve recall; 2) Using LLMs to generate alternative phrasings of the query; 3) Expanding abbreviations and acronyms; 4) Integrating domain-specific terminology; 5) Breaking complex queries into sub-queries; 6) Adding contextual information from conversation history; and 7) Implementing hierarchical querying approaches. Effective query expansion helps overcome vocabulary mismatch problems and improves retrieval quality, ultimately leading to more accurate and comprehensive RAG responses.",
+      "relevant_doc_ids": ["doc-query-expansion-1", "doc-rag-techniques-1"]
+    },
+    {
+      "id": "gen-006",
+      "query": "What techniques can be used for reranking retrieved documents?",
+      "expected_answer": "Document reranking techniques improve retrieval quality by reordering initially retrieved documents based on more sophisticated relevance assessments. Common approaches include: 1) Cross-encoder models that perform deep comparison between query and document pairs; 2) LLM-based reranking where a language model scores document relevance; 3) Diversification strategies that promote result variety; 4) Hybrid ranking methods combining multiple signals like BM25 and neural similarity; 5) Reciprocal rank fusion for combining multiple ranking algorithms; 6) Supervised learning approaches trained on human relevance judgments; 7) Reinforcement learning from user feedback; and 8) Query-specific weighting schemes. Effective reranking significantly improves precision at the top ranks, ensuring the most relevant documents are prioritized for the generation phase.",
+      "relevant_doc_ids": ["doc-reranking-1", "doc-retrieval-pipeline-1"]
+    },
+    {
+      "id": "gen-007",
+      "query": "What metrics are used to evaluate RAG systems?",
+      "expected_answer": "RAG systems are evaluated using metrics that assess different aspects of performance: 1) Retrieval quality metrics like precision, recall, Mean Average Precision (MAP), and normalized Discounted Cumulative Gain (nDCG); 2) Answer quality metrics including correctness, relevance, faithfulness to sources, and answer completeness; 3) Hallucination metrics that measure factual consistency with retrieved contexts; 4) Operational metrics like latency, throughput, and resource usage; 5) User satisfaction measures through explicit feedback or implicit signals; 6) Task-specific metrics for particular use cases; and 7) Comparative benchmarks against baseline systems. Comprehensive evaluation typically combines automated metrics with human evaluation to capture both technical performance and practical utility.",
+      "relevant_doc_ids": ["doc-rag-evaluation-1", "doc-benchmarking-1"]
+    },
+    {
+      "id": "gen-008",
+      "query": "How does chunking strategy affect RAG performance?",
+      "expected_answer": "Chunking strategy significantly impacts RAG performance by determining how documents are divided into retrievable units. Effective chunking considers: 1) Chunk size balance (too large reduces specificity, too small loses context); 2) Semantic coherence (preserving logical units like paragraphs or sections); 3) Overlap between chunks to prevent information loss at boundaries; 4) Hierarchical chunking approaches that maintain both detailed and higher-level context; 5) Domain-specific considerations (e.g., code vs. narrative text); 6) Metadata preservation to maintain provenance and relationships; and 7) Adaptive strategies based on content type and density. The optimal chunking approach varies by use case and content type, often requiring experimentation to maximize retrieval effectiveness.",
+      "relevant_doc_ids": ["doc-chunking-strategies-1", "doc-document-processing-1"]
+    },
+    {
+      "id": "gen-009",
+      "query": "What is the role of prompt engineering in RAG systems?",
+      "expected_answer": "Prompt engineering in RAG systems plays a crucial role in guiding the LLM to effectively use retrieved information. Key aspects include: 1) Structuring prompts to clearly delineate between the query, retrieved context, and instructions; 2) Providing explicit guidance on how to use the retrieved information; 3) Including instructions for handling missing or contradictory information; 4) Specifying citation requirements for traceability; 5) Formatting retrieved documents with metadata to aid contextualization; 6) Balancing prompt length with LLM context window constraints; 7) Adapting prompting strategies to specific models and use cases; and 8) Iterative refinement based on system performance. Well-crafted prompts help minimize hallucinations, improve answer relevance, and enhance the overall quality of generated responses.",
+      "relevant_doc_ids": ["doc-prompt-engineering-1", "doc-llm-integration-1"]
+    },
+    {
+      "id": "gen-010",
+      "query": "How can vector databases be optimized for RAG applications?",
+      "expected_answer": "Vector databases can be optimized for RAG applications through several approaches: 1) Implementing efficient indexing structures like HNSW, IVF, or PQ compression for faster similarity search; 2) Sharding and partitioning strategies for scalability; 3) Hybrid search combining vector similarity with metadata filtering; 4) Optimizing for specific hardware (CPU, GPU, or specialized accelerators); 5) Strategic replication for high availability and load balancing; 6) Caching frequently accessed vectors; 7) Implementing appropriate vector dimension and quantization trade-offs; 8) Batch processing for efficient updates; 9) Optimizing storage formats and compression; and 10) Implementing proper monitoring and performance tuning. These optimizations balance search quality, speed, and resource utilization to meet the performance requirements of production RAG systems.",
+      "relevant_doc_ids": ["doc-vector-databases-1", "doc-rag-infrastructure-1"]
+    }
+  ],
+  "metadata": {
+    "created_at": "2024-02-25",
+    "created_by": "RAG Benchmark Team",
+    "version": "1.0"
+  }
+}
