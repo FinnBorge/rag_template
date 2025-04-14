@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Bench Chat</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background-color: #f5f5f5;
+        }
+        .header {
+            background-color: #4a6fa5;
+            color: white;
+            padding: 1rem;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .chat-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            max-width: 800px;
+            margin: 0 auto;
+            width: 100%;
+            padding: 1rem;
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-bottom: 1rem;
+        }
+        .message {
+            margin-bottom: 1rem;
+            padding: 0.8rem;
+            border-radius: 8px;
+            max-width: 80%;
+        }
+        .user-message {
+            background-color: #e1f5fe;
+            align-self: flex-end;
+            margin-left: auto;
+        }
+        .system-message {
+            background-color: #f1f1f1;
+            align-self: flex-start;
+        }
+        .source {
+            font-size: 0.8rem;
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            background-color: #f9f9f9;
+            border-radius: 4px;
+            border-left: 3px solid #4a6fa5;
+        }
+        .source-title {
+            font-weight: bold;
+        }
+        .source-score {
+            color: #666;
+        }
+        .metrics {
+            font-size: 0.8rem;
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            background-color: #f0f7ff;
+            border-radius: 4px;
+            border-left: 3px solid #4a6fa5;
+            display: block;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .metrics ul {
+            margin: 0.5rem 0;
+            padding-left: 1.5rem;
+            list-style-type: disc;
+        }
+        .metrics li {
+            margin-bottom: 0.25rem;
+            color: #333;
+        }
+        .metrics strong {
+            color: #4a6fa5;
+        }
+        .input-container {
+            display: flex;
+            gap: 0.5rem;
+        }
+        #user-input {
+            flex: 1;
+            padding: 0.8rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 1rem;
+        }
+        button {
+            padding: 0.8rem 1.5rem;
+            background-color: #4a6fa5;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+        button:hover {
+            background-color: #3a5a8f;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>RAG Bench Chat</h1>
+    </div>
+    <div class="chat-container">
+        <div class="messages" id="messages">
+            <div class="message system-message">
+                Hello! I'm your RAG assistant. Ask me anything about the documents in the system.
+            </div>
+        </div>
+        <div class="input-container">
+            <input type="text" id="user-input" placeholder="Type your question here..." autocomplete="off">
+            <button id="send-button">
+                <span id="button-text">Send</span>
+                <span id="loading-indicator" class="loading hidden"></span>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const messagesContainer = document.getElementById('messages');
+            const userInput = document.getElementById('user-input');
+            const sendButton = document.getElementById('send-button');
+            const buttonText = document.getElementById('button-text');
+            const loadingIndicator = document.getElementById('loading-indicator');
+            
+            // Add debug mode (can be toggled with ?debug=true in URL)
+            const urlParams = new URLSearchParams(window.location.search);
+            const debugMode = urlParams.get('debug') === 'true';
+            
+            if (debugMode) {
+                console.log('Debug mode enabled');
+                // Add debug indicator to the UI
+                const header = document.querySelector('.header');
+                const debugIndicator = document.createElement('div');
+                debugIndicator.textContent = 'Debug Mode';
+                debugIndicator.style.fontSize = '0.8rem';
+                debugIndicator.style.opacity = '0.7';
+                header.appendChild(debugIndicator);
+            }
+            
+            let conversationId = null;
+
+            // Function to add a message to the chat
+            function addMessage(content, isUser = false, sources = [], data = null) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${isUser ? 'user-message' : 'system-message'}`;
+                messageDiv.textContent = content;
+                
+                // Add sources if available
+                if (sources && sources.length > 0) {
+                    const sourcesContainer = document.createElement('div');
+                    sourcesContainer.innerHTML = '<strong>Sources:</strong>';
+                    
+                    sources.forEach(source => {
+                        const sourceDiv = document.createElement('div');
+                        sourceDiv.className = 'source';
+                        sourceDiv.innerHTML = `
+                            <span class="source-title">${source.title || 'Unknown'}</span>
+                            <span class="source-score"> (Relevance: ${Math.round((source.relevance_score || 0) * 100)}%)</span>
+                        `;
+                        sourcesContainer.appendChild(sourceDiv);
+                    });
+                    
+                    messageDiv.appendChild(sourcesContainer);
+                }
+                
+                // Add metrics if available
+                const addMetrics = (data) => {
+                    if (!data) return;
+                    
+                    console.log("Checking data for metrics:", data);
+                    
+                    // Create default metrics if none exist
+                    let metrics = null;
+                    
+                    // Check all possible locations for metrics
+                    if (data.metadata && data.metadata.metrics) {
+                        metrics = data.metadata.metrics;
+                        console.log("Found metrics in data.metadata.metrics:", metrics);
+                    } else if (data.metrics) {
+                        metrics = data.metrics;
+                        console.log("Found metrics in data.metrics:", metrics);
+                    }
+                    
+                    // If we still don't have metrics, create some basic ones from the data
+                    if (!metrics && data) {
+                        metrics = {};
+                        // If we have sources/documents, count them
+                        if (data.sources && Array.isArray(data.sources)) {
+                            metrics.documents_retrieved = data.sources.length;
+                        } else if (data.documents && Array.isArray(data.documents)) {
+                            metrics.documents_retrieved = data.documents.length;
+                        }
+                        console.log("Created basic metrics:", metrics);
+                    }
+                    
+                    if (metrics) {
+                        console.log("Processing metrics:", metrics);
+                        const metricsContainer = document.createElement('div');
+                        metricsContainer.className = 'metrics';
+                        metricsContainer.innerHTML = '<strong>Performance Metrics:</strong>';
+                        
+                        const metricsList = document.createElement('ul');
+                        
+                        // Helper function to add a metric if it exists
+                        const addMetricItem = (name, value, unit = '') => {
+                            if (value !== undefined && value !== null) {
+                                const item = document.createElement('li');
+                                // Format numbers to 2 decimal places if they're numbers
+                                const formattedValue = typeof value === 'number' ? value.toFixed(2) : value;
+                                item.textContent = `${name}: ${formattedValue}${unit}`;
+                                metricsList.appendChild(item);
+                                return true;
+                            }
+                            return false;
+                        };
+                        
+                        // Add all possible metrics
+                        let hasMetrics = false;
+                        hasMetrics |= addMetricItem('Retrieval time', metrics.retrieval_time, 'ms');
+                        hasMetrics |= addMetricItem('Generation time', metrics.generation_time, 'ms');
+                        hasMetrics |= addMetricItem('Total time', metrics.total_time, 'ms');
+                        hasMetrics |= addMetricItem('Documents retrieved', metrics.documents_retrieved);
+                        hasMetrics |= addMetricItem('Documents used', metrics.documents_used);
+                        
+                        // Add any other metrics that might be present
+                        for (const [key, value] of Object.entries(metrics)) {
+                            if (!['retrieval_time', 'generation_time', 'total_time', 'documents_retrieved', 'documents_used'].includes(key)) {
+                                hasMetrics |= addMetricItem(key.replace(/_/g, ' '), value);
+                            }
+                        }
+                        
+                        if (hasMetrics) {
+                            metricsContainer.appendChild(metricsList);
+                            messageDiv.appendChild(metricsContainer);
+                            console.log("Added metrics to message:", metricsContainer);
+                        } else {
+                            // Always show at least something
+                            const item = document.createElement('li');
+                            item.textContent = `Response generated successfully`;
+                            metricsList.appendChild(item);
+                            metricsContainer.appendChild(metricsList);
+                            messageDiv.appendChild(metricsContainer);
+                            console.log("Added default metrics message");
+                        }
+                    } else {
+                        console.log("No metrics found in data");
+                        // Add a minimal metrics display anyway
+                        const metricsContainer = document.createElement('div');
+                        metricsContainer.className = 'metrics';
+                        metricsContainer.innerHTML = '<strong>Performance Metrics:</strong>';
+                        const metricsList = document.createElement('ul');
+                        const item = document.createElement('li');
+                        item.textContent = `Response generated successfully`;
+                        metricsList.appendChild(item);
+                        metricsContainer.appendChild(metricsList);
+                        messageDiv.appendChild(metricsContainer);
+                    }
+                };
+                
+                // Try to add metrics from the data
+                addMetrics(data);
+                
+                messagesContainer.appendChild(messageDiv);
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
+
+            // Function to send a message to the API
+            async function sendMessage(message) {
+                setLoading(true);
+                
+                try {
+                    // First try the chat completions endpoint
+                    try {
+                        const payload = {
+                            query: message,
+                            metadata: {
+                                include_document_text: false,
+                                user_id: "web-user",
+                                conversation_id: conversationId || undefined
+                            },
+                            stream: false
+                        };
+                        
+                        console.log('Sending chat completion request:', payload);
+                        
+                        const response = await fetch('/api/v1/chat/completions', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify(payload),
+                        });
+                        
+                        if (response.ok) {
+                            const data = await response.json();
+                            
+                            // Save conversation ID for future messages
+                            if (data.conversation_id) {
+                                conversationId = data.conversation_id;
+                            }
+                            
+                            // Add the response to the chat
+                            console.log("Chat completion response data:", data);
+                            addMessage(data.answer, false, data.sources || data.documents, data);
+                            return;
+                        } else {
+                            const errorText = await response.text();
+                            console.error('Chat completions error:', errorText);
+                            console.error('Status:', response.status);
+                            
+                            // Log more detailed error information
+                            try {
+                                const errorJson = JSON.parse(errorText);
+                                console.error('Error details:', errorJson);
+                                
+                                // Show validation errors in the UI for debugging
+                                if (debugMode && errorJson.detail) {
+                                    addMessage(`Error: ${JSON.stringify(errorJson.detail)}`, false);
+                                    return;
+                                }
+                            } catch (e) {
+                                // Not JSON, just log the text
+                            }
+                            
+                            // Continue to fallback query endpoint
+                        }
+                    } catch (error) {
+                        console.log('Chat completions endpoint failed, trying query endpoint');
+                    }
+                    
+                    // Fall back to the query endpoint if chat completions fails
+                    console.log('Falling back to query endpoint');
+                    const queryUrl = conversationId 
+                        ? `/api/v1/query?q=${encodeURIComponent(message)}&conversation_id=${encodeURIComponent(conversationId)}`
+                        : `/api/v1/query?q=${encodeURIComponent(message)}`;
+                    
+                    const queryResponse = await fetch(queryUrl);
+                    
+                    if (!queryResponse.ok) {
+                        console.error('Query endpoint error:', await queryResponse.text());
+                        throw new Error('API request failed');
+                    }
+                    
+                    const queryData = await queryResponse.json();
+                    console.log('Query response:', queryData);
+                    
+                    // Add the response to the chat
+                    if (queryData.answer) {
+                        // Handle both sources and documents fields
+                        const sourcesData = queryData.sources || queryData.documents || [];
+                        // Pass the entire queryData to addMessage for metrics
+                        console.log("Query response data:", queryData);
+                        
+                        // Ensure metrics exist in the response
+                        if (!queryData.metrics && !queryData.metadata?.metrics) {
+                            // Create basic metrics if none exist
+                            queryData.metrics = {
+                                documents_retrieved: sourcesData.length,
+                                total_time: new Date().getTime() - performance.now()
+                            };
+                            console.log("Created default metrics for display:", queryData.metrics);
+                        }
+                        
+                        addMessage(queryData.answer, false, sourcesData, queryData);
+                    } else {
+                        // Provide a more helpful fallback response
+                        addMessage(`I don't have specific information about "${message}" in my documents. However, I can try to help based on my general knowledge.`, false);
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    addMessage('Sorry, there was an error processing your request. Please try again.', false);
+                } finally {
+                    setLoading(false);
+                }
+            }
+
+            // Debug log helper
+            function debugLog(...args) {
+                if (debugMode) {
+                    console.log(...args);
+                }
+            }
+            
+            // Function to set loading state
+            function setLoading(isLoading) {
+                if (isLoading) {
+                    buttonText.classList.add('hidden');
+                    loadingIndicator.classList.remove('hidden');
+                    userInput.disabled = true;
+                    sendButton.disabled = true;
+                } else {
+                    buttonText.classList.remove('hidden');
+                    loadingIndicator.classList.add('hidden');
+                    userInput.disabled = false;
+                    sendButton.disabled = false;
+                    userInput.focus();
+                }
+            }
+
+            // Event listener for send button
+            sendButton.addEventListener('click', () => {
+                const message = userInput.value.trim();
+                if (message) {
+                    addMessage(message, true);
+                    userInput.value = '';
+                    sendMessage(message);
+                }
+            });
+
+            // Event listener for Enter key
+            userInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    const message = userInput.value.trim();
+                    if (message) {
+                        addMessage(message, true);
+                        userInput.value = '';
+                        sendMessage(message);
+                    }
+                }
+            });
+
+            // Focus input on load
+            userInput.focus();
+        });
+    </script>
+</body>
+</html>

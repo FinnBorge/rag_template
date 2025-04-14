@@ -5,8 +5,9 @@ from pydantic import BaseModel, Field
 
 
 class ChatMetadata(BaseModel):
-    user_id: Optional[int] = Field(default=None)
+    user_id: Optional[str] = Field(default=None)
     conversation_id: str = Field(default_factory=lambda: str(uuid4()))
+    include_document_text: bool = Field(default=False)
 
 
 class ChatDocument(BaseModel):
@@ -31,6 +32,7 @@ class ChatResponse(BaseModel):
     model: str = "rag-bench-model"
     documents: list[ChatDocument] = []
     status: Literal["pending", "completed"] = "completed"
+    metrics: Optional[dict] = None
     
     @staticmethod
     def from_document_with_score(doc_with_score, include_document_text: bool = False) -> "ChatDocument":
