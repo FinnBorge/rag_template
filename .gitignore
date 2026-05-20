@@ -74,3 +74,4 @@ models/
 
 # pgvector source code - cloned during setup
 pgvector/
+.aider*

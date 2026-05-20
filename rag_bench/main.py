@@ -3,6 +3,7 @@ Main entry point for the RAG benchmarking application.
 """
 import logging
 import os
+import time
 from typing import List, Optional
 
 import uvicorn
@@ -14,8 +15,8 @@ from injector import Injector, inject, singleton
 
 from rag_bench.core.types import EmbeddingComponent, LLMComponent, VectorStoreComponent
 from rag_bench.core.document_processors import (
-    ThresholdFilter, 
-    SemanticReranker, 
+    ThresholdFilter,
+    SemanticReranker,
     LLMReranker,
     DiversityReranker,
     ProcessingPipeline
@@ -35,16 +36,35 @@ from rag_bench.settings.settings_loader import load_settings
 
 logger = logging.getLogger(__name__)
 
-# Load settings from configuration file
-settings_path = os.environ.get("SETTINGS_PATH", "settings.yaml")
-settings_dict = load_settings(settings_path)
-settings = Settings.model_validate(settings_dict)
 
-# Set up dependency injection
-injector = Injector([
-    lambda binder: binder.bind(Settings, to=settings, scope=singleton),
-    configure_injection
-])
+def create_settings() -> Settings:
+    """Load and validate settings from configuration file."""
+    settings_path = os.environ.get("SETTINGS_PATH", "settings.yaml")
+    settings_dict = load_settings(settings_path)
+    return Settings.model_validate(settings_dict)
+
+
+def create_injector(settings: Settings) -> Injector:
+    """Create dependency injection container."""
+    return Injector([
+        lambda binder: binder.bind(Settings, to=settings, scope=singleton),
+        configure_injection
+    ])
+
+
+def get_cors_origins(settings: Settings) -> List[str]:
+    """Get CORS origins based on environment."""
+    if settings.server.env_name == "production":
+        # In production, this should be configured via settings
+        return ["https://your-production-domain.com"]
+    # Development mode - allow all origins
+    return ["*"]
+
+
+# Load settings and create injector
+settings = create_settings()
+injector = create_injector(settings)
+
 
 app = FastAPI(
     title="RAG Benchmarking System",
@@ -57,28 +77,33 @@ static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 os.makedirs(static_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-# Add route for the chat interface
+
 @app.get("/", response_class=HTMLResponse)
 async def get_chat_interface():
+    """Serve the chat interface HTML page."""
     html_path = os.path.join(static_dir, "index.html")
     if os.path.exists(html_path):
         with open(html_path, "r") as f:
             html_content = f.read()
         return HTMLResponse(content=html_content)
-    else:
-        return HTMLResponse(content="<html><body><h1>Chat interface not found</h1><p>Please create the static/index.html file.</p></body></html>")
+    return HTMLResponse(
+        content="<html><body><h1>Chat interface not found</h1>"
+        "<p>Please create the static/index.html file.</p></body></html>"
+    )
 
-# Add middleware to inject the injector into the request state
+
 @app.middleware("http")
 async def inject_injector(request: Request, call_next):
+    """Middleware to inject the DI container into request state."""
     request.state.injector = injector
     response = await call_next(request)
     return response
 
-# Add CORS middleware
+
+# Add CORS middleware with environment-aware origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict this to specific origins
+    allow_origins=get_cors_origins(settings),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -86,12 +111,6 @@ app.add_middleware(
 
 # Add routers
 app.include_router(chat_router, prefix="/api/v1")
-
-
-@app.get("/")
-async def root():
-    """Health check endpoint."""
-    return {"status": "ok", "message": "RAG Benchmark system is running"}
 
 
 @app.get("/health")
@@ -107,10 +126,56 @@ async def health():
     }
 
 
-# Create a simple endpoint to test the RAG engine
 def get_rag_engine():
     """Get the RAG engine from the injector."""
     return injector.get(RAGEngine)
+
+
+def _build_query_response(
+    answer: SourcedAnswer,
+    conversation_id: Optional[str],
+    total_time_ms: float,
+) -> dict:
+    """Build a response dict from a SourcedAnswer without mutating it."""
+    docs_retrieved = len(answer.sources) if answer.sources else 0
+    docs_used = sum(
+        1 for src in answer.sources
+        if src.get("relevance_score", 0) > 0.7
+    ) if answer.sources else 0
+
+    return {
+        "answer": answer.answer,
+        "sources": answer.sources,
+        "conversation_id": conversation_id,
+        "metrics": {
+            "total_time_ms": total_time_ms,
+            "documents_retrieved": docs_retrieved,
+            "documents_used": docs_used,
+        }
+    }
+
+
+def _build_error_response(
+    query: str,
+    conversation_id: Optional[str],
+    total_time_ms: float,
+    error: Optional[str] = None,
+) -> dict:
+    """Build a fallback response for errors or empty results."""
+    response = {
+        "answer": "I don't have specific information about that in my documents.",
+        "sources": [],
+        "conversation_id": conversation_id,
+        "metrics": {
+            "total_time_ms": total_time_ms,
+            "documents_retrieved": 0,
+            "documents_used": 0,
+        }
+    }
+    if error:
+        response["metrics"]["error"] = error
+    return response
+
 
 @app.get("/api/v1/query")
 async def query(
@@ -120,186 +185,125 @@ async def query(
 ):
     """
     Query endpoint for testing the RAG engine.
-    
+
     Args:
         q: The query string
         conversation_id: Optional conversation ID for context
-        
+
     Returns:
-        Answer with sources
+        Answer with sources and metrics
     """
     logger.info(f"Received query: {q}")
-    
+    start_time = time.time()
+
     try:
-        start_time = __import__('time').time()
         answer = await rag_engine.generate_answer(q, conversation_id)
-        total_time = (__import__('time').time() - start_time) * 1000  # Convert to milliseconds
-        
-        # If no answer was generated or it's empty, provide a fallback
+        total_time_ms = (time.time() - start_time) * 1000
+
         if not answer or not answer.answer:
             logger.warning(f"No answer generated for query: {q}")
-            return {
-                "answer": f"I don't have specific information about that in my documents. However, I can try to help based on my general knowledge: {q}",
-                "sources": [],
-                "conversation_id": conversation_id,
-                "metadata": {
-                    "metrics": {
-                        "total_time": total_time,
-                        "documents_retrieved": 0,
-                        "documents_used": 0
-                    }
-                }
-            }
-        
-        # Add metrics to the response
-        if not hasattr(answer, "metadata") or answer.metadata is None:
-            answer.metadata = {}
-        
-        # Create metrics if they don't exist
-        if "metrics" not in answer.metadata:
-            answer.metadata["metrics"] = {}
-        
-        # Add total time if not already present
-        if "total_time" not in answer.metadata["metrics"]:
-            answer.metadata["metrics"]["total_time"] = total_time
-        
-        # Add document counts if not already present
-        if "documents_retrieved" not in answer.metadata["metrics"] and hasattr(answer, "sources"):
-            answer.metadata["metrics"]["documents_retrieved"] = len(answer.sources)
-        
-        if "documents_used" not in answer.metadata["metrics"] and hasattr(answer, "sources"):
-            # Count documents with high relevance (above 0.7)
-            docs_used = sum(1 for doc in answer.sources if getattr(doc, "relevance_score", 0) > 0.7)
-            answer.metadata["metrics"]["documents_used"] = docs_used
-        
-        # Also add metrics directly to the response for easier access
-        answer.metrics = answer.metadata["metrics"]
-        
-        # Convert to dict for serialization if needed
-        if hasattr(answer, "model_dump"):
-            try:
-                # Try to convert to dict to ensure serializable
-                answer_dict = answer.model_dump()
-                # Make sure metrics are included in the dict
-                if "metrics" not in answer_dict:
-                    answer_dict["metrics"] = answer.metrics
-                logger.info(f"Response metrics in dict: {answer_dict.get('metrics')}")
-            except Exception as e:
-                logger.error(f"Error converting answer to dict: {e}")
-        
-        # Log metrics for debugging
-        logger.info(f"Response metrics: {answer.metrics}")
-        
-        return answer
+            return _build_error_response(q, conversation_id, total_time_ms)
+
+        return _build_query_response(answer, conversation_id, total_time_ms)
+
     except Exception as e:
         logger.error(f"Error generating answer: {e}")
-        end_time = __import__('time').time()
-        total_time = (end_time - start_time) * 1000 if 'start_time' in locals() else 0
-        
-        return {
-            "answer": f"I don't have specific information about that in my documents. However, I can try to help based on my general knowledge: {q}",
-            "sources": [],
-            "conversation_id": conversation_id,
-            "metadata": {
-                "metrics": {
-                    "total_time": total_time,
-                    "error": str(e),
-                    "documents_retrieved": 0,
-                    "documents_used": 0
-                }
-            }
-        }
+        total_time_ms = (time.time() - start_time) * 1000
+        return _build_error_response(q, conversation_id, total_time_ms, str(e))
 
 
-# Define a function to set up query enhancers
-@singleton
-@inject
 def setup_query_enhancers(
-    settings: Settings,
+    app_settings: Settings,
     llm_component: LLMComponent
 ) -> List[QueryEnhancer]:
     """Set up query enhancers based on settings."""
-    enhancers = []
-    
-    # Example hyponym map - in a real implementation, this would be loaded from a data file
+    # Hyponym map - in production, load from config file
     hyponym_map = {
         "medication": ["drug", "pill", "capsule", "tablet", "prescription"],
         "doctor": ["physician", "specialist", "clinician", "surgeon", "practitioner"],
         "symptoms": ["signs", "indications", "manifestations"],
     }
-    
-    # Add stop word removal enhancer
-    enhancers.append(StopWordRemovalEnhancer())
-    
-    # Add hyponym expansion enhancer
-    enhancers.append(HyponymExpansionEnhancer(hyponym_map))
-    
-    # Add LLM query expansion enhancer if configured
-    if settings.llm.mode != "mock":
+
+    enhancers: List[QueryEnhancer] = [
+        StopWordRemovalEnhancer(),
+        HyponymExpansionEnhancer(hyponym_map),
+    ]
+
+    if app_settings.llm.mode != "mock":
         enhancers.append(LLMQueryExpansionEnhancer(llm_component))
-    
+
     return enhancers
 
 
-# Define a function to set up document post-processors
-@singleton
-@inject
 def setup_document_processors(
-    settings: Settings,
+    app_settings: Settings,
     embedding_component: EmbeddingComponent,
     llm_component: LLMComponent
 ) -> List[DocumentPostProcessor]:
     """Set up document post-processors based on settings."""
-    processors = []
-    
-    # Add threshold filter
-    processors.append(ThresholdFilter(threshold=settings.rag.similarity_threshold))
-    
-    # Add semantic reranker
-    processors.append(SemanticReranker(embedding_component))
-    
-    # Add LLM reranker if configured
-    if settings.llm.mode != "mock":
+    processors: List[DocumentPostProcessor] = [
+        ThresholdFilter(threshold=app_settings.rag.similarity_threshold),
+        SemanticReranker(embedding_component),
+    ]
+
+    if app_settings.llm.mode != "mock":
         processors.append(LLMReranker(llm_component))
-    
-    # Add diversity reranker
+
     processors.append(DiversityReranker(embedding_component, diversity_weight=0.3))
-    
+
     return processors
 
 
-# Keep track of the query enhancers and document processors we've configured
-try:
-    # Try to get the LLM component
-    llm_component = injector.get(LLMComponent)
-    embedding_component = injector.get(EmbeddingComponent)
-    
-    query_enhancers = setup_query_enhancers(settings, llm_component)
-    document_processors = setup_document_processors(settings, embedding_component, llm_component)
-except Exception as e:
-    logger.error(f"Error initializing components: {e}")
-    logger.error("\nTROUBLESHOOTING STEPS:")
-    logger.error("1. Check that the model file exists in the models directory")
-    logger.error("2. Run 'poetry run python initialize_models.py' to download the model")
-    logger.error("3. Or set 'llm.mode: mock' in settings.yaml for a mock implementation")
-    logger.error("4. Run 'poetry run python setup_all.py' for complete setup\n")
-    
-    logger.warning("Using mock components as fallback...")
-    
-    # Switch to mock mode in settings
-    settings.llm.mode = "mock"
-    settings.embedding.mode = "mock"
-    
-    # Reinitialize injector with mock components
-    from rag_bench.dependency_injection import AppModule
-    mock_injector = Injector([AppModule()])
-    
-    # Get mock components
-    llm_component = mock_injector.get(LLMComponent)
-    embedding_component = mock_injector.get(EmbeddingComponent)
-    
-    query_enhancers = setup_query_enhancers(settings, llm_component)
-    document_processors = setup_document_processors(settings, embedding_component, llm_component)
+def initialize_components(app_settings: Settings, app_injector: Injector):
+    """
+    Initialize RAG components. Falls back to mock mode on failure.
+
+    Returns a new settings object if fallback was needed (immutable pattern).
+    """
+    try:
+        llm_component = app_injector.get(LLMComponent)
+        embedding_component = app_injector.get(EmbeddingComponent)
+
+        query_enhancers = setup_query_enhancers(app_settings, llm_component)
+        document_processors = setup_document_processors(
+            app_settings, embedding_component, llm_component
+        )
+
+        return app_settings, query_enhancers, document_processors
+
+    except Exception as e:
+        logger.error(f"Error initializing components: {e}")
+        logger.error("\nTROUBLESHOOTING STEPS:")
+        logger.error("1. Check that the model file exists in the models directory")
+        logger.error("2. Run 'poetry run python initialize_models.py' to download the model")
+        logger.error("3. Or set 'llm.mode: mock' in settings.yaml for a mock implementation")
+        logger.error("4. Run 'poetry run python setup_all.py' for complete setup\n")
+
+        logger.warning("Using mock components as fallback...")
+
+        # Create new settings with mock mode (immutable - don't modify original)
+        mock_settings_dict = app_settings.model_dump()
+        mock_settings_dict["llm"]["mode"] = "mock"
+        mock_settings_dict["embedding"]["mode"] = "mock"
+        mock_settings = Settings.model_validate(mock_settings_dict)
+
+        # Create new injector with mock settings
+        from rag_bench.dependency_injection import AppModule
+        mock_injector = Injector([AppModule()])
+
+        llm_component = mock_injector.get(LLMComponent)
+        embedding_component = mock_injector.get(EmbeddingComponent)
+
+        query_enhancers = setup_query_enhancers(mock_settings, llm_component)
+        document_processors = setup_document_processors(
+            mock_settings, embedding_component, llm_component
+        )
+
+        return mock_settings, query_enhancers, document_processors
+
+
+# Initialize components at module load
+settings, query_enhancers, document_processors = initialize_components(settings, injector)
 
 
 def run_server():

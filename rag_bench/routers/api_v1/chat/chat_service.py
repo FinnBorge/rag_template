@@ -1,5 +1,8 @@
-from typing import List, Optional, Dict, Any, Generator
+from typing import List, Optional, Dict, Any, Generator, AsyncGenerator
 from uuid import uuid4
+from datetime import datetime, timedelta
+from collections import OrderedDict
+import logging
 
 from injector import inject, singleton
 from pydantic import BaseModel
@@ -9,32 +12,119 @@ from rag_bench.core.types import Message, Conversation
 from rag_bench.routers.api_v1.chat.types import ChatMetadata, ChatResponse, ChatDocument
 
 
+logger = logging.getLogger(__name__)
+
+
 class StreamingChunk(BaseModel):
     content: str
     done: bool = False
 
 
+class ConversationEntry:
+    """Wrapper for conversation with TTL tracking."""
+
+    def __init__(self, conversation: Conversation):
+        self.conversation = conversation
+        self.last_accessed = datetime.utcnow()
+
+    def touch(self) -> None:
+        """Update last accessed time."""
+        self.last_accessed = datetime.utcnow()
+
+    def is_expired(self, ttl: timedelta) -> bool:
+        """Check if this entry has expired."""
+        return datetime.utcnow() - self.last_accessed > ttl
+
+
+class ConversationStore:
+    """
+    Bounded conversation store with TTL and max size limits.
+
+    Prevents unbounded memory growth by:
+    - Limiting max number of conversations
+    - Expiring conversations after TTL
+    - Using LRU eviction when at capacity
+    """
+
+    DEFAULT_MAX_SIZE = 1000
+    DEFAULT_TTL = timedelta(hours=1)
+
+    def __init__(
+        self,
+        max_size: int = DEFAULT_MAX_SIZE,
+        ttl: timedelta = DEFAULT_TTL,
+    ):
+        self._max_size = max_size
+        self._ttl = ttl
+        self._store: OrderedDict[str, ConversationEntry] = OrderedDict()
+
+    def get(self, conversation_id: str) -> Optional[Conversation]:
+        """Get a conversation by ID, returns None if not found or expired."""
+        entry = self._store.get(conversation_id)
+        if entry is None:
+            return None
+
+        if entry.is_expired(self._ttl):
+            del self._store[conversation_id]
+            logger.debug(f"Conversation {conversation_id} expired")
+            return None
+
+        # Move to end (most recently used) and update access time
+        self._store.move_to_end(conversation_id)
+        entry.touch()
+        return entry.conversation
+
+    def set(self, conversation: Conversation) -> None:
+        """Store a conversation, evicting oldest if at capacity."""
+        # Clean expired entries periodically
+        self._cleanup_expired()
+
+        # Evict oldest if at capacity
+        while len(self._store) >= self._max_size:
+            oldest_id, _ = self._store.popitem(last=False)
+            logger.debug(f"Evicted conversation {oldest_id} (LRU)")
+
+        self._store[conversation.id] = ConversationEntry(conversation)
+
+    def _cleanup_expired(self) -> None:
+        """Remove expired entries (called periodically)."""
+        expired_ids = [
+            cid for cid, entry in self._store.items()
+            if entry.is_expired(self._ttl)
+        ]
+        for cid in expired_ids:
+            del self._store[cid]
+
+        if expired_ids:
+            logger.debug(f"Cleaned up {len(expired_ids)} expired conversations")
+
+    def __len__(self) -> int:
+        return len(self._store)
+
+
 @singleton
 class ChatService:
     """Service for handling chat interactions with the RAG engine."""
-    
+
     @inject
     def __init__(
         self,
         rag_engine: RAGEngine,
     ) -> None:
         self.rag_engine = rag_engine
-        self._conversations: Dict[str, Conversation] = {}
-    
+        self._conversations = ConversationStore()
+
     def _get_or_create_conversation(self, conversation_id: Optional[str] = None) -> Conversation:
         """Get an existing conversation or create a new one."""
-        if conversation_id and conversation_id in self._conversations:
-            return self._conversations[conversation_id]
-        
+        if conversation_id:
+            existing = self._conversations.get(conversation_id)
+            if existing is not None:
+                return existing
+
         # Create new conversation
         conversation = Conversation()
-        self._conversations[conversation.id] = conversation
-        
+        self._conversations.set(conversation)
+
         return conversation
     
     async def generate_response(
