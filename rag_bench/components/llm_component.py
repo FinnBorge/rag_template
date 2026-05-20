@@ -105,59 +105,67 @@ class MockLLMComponent:
         
 class LocalLLMComponent:
     """Component for generating text using locally-hosted LLM APIs."""
-    
+
     @inject
     def __init__(self, settings: Settings):
         self.settings = settings
         self.local_settings = settings.local_llm
-        
+
         if not self.local_settings:
             raise ValueError("Local LLM settings are required for LocalLLMComponent")
-            
+
         # Initialize client
         try:
             from llama_cpp import Llama
-            
-            model_path = self.local_settings.model_path
-            
-            # Check if model exists
             import os
+
+            model_path = self.local_settings.model_path
+
+            # Check if model exists
             if not os.path.exists(model_path):
                 error_msg = f"Model path does not exist: {model_path}"
                 logger.error(error_msg)
-                logger.error("Please run 'poetry run python initialize_models.py' to download the model first.")
-                logger.error("Or update settings.yaml to use mode: mock for llm if you want to proceed without a model.")
+                logger.error(
+                    "Please run 'poetry run python initialize_models.py' to download the model first."
+                )
+                logger.error(
+                    "Or update settings.yaml to use mode: mock for llm if you want to proceed without a model."
+                )
                 raise FileNotFoundError(error_msg)
-            
+
             self.model = Llama(
                 model_path=model_path,
                 n_ctx=self.local_settings.context_length,
-                n_gpu_layers=self.local_settings.n_gpu_layers
+                n_gpu_layers=self.local_settings.n_gpu_layers,
             )
-            
+
             logger.info(f"Initialized local LLM with model {model_path}")
-        except FileNotFoundError as e:
-            logger.error(f"Model file not found: {e}")
+        except FileNotFoundError:
             raise
         except Exception as e:
             logger.error(f"Error initializing local LLM: {e}")
             raise
-    
+
+    def _generate_sync(self, prompt: str) -> str:
+        """Synchronous generation - runs in thread pool."""
+        response = self.model(
+            prompt,
+            max_tokens=self.local_settings.max_tokens or 1024,
+            temperature=self.local_settings.temperature or 0.7,
+            stop=self.local_settings.stop_sequences or ["Human:", "Assistant:"],
+        )
+        return response["choices"][0]["text"]
+
     async def agenerate(self, template: str, **kwargs) -> str:
         """Generate text using the local LLM."""
-        # Format the template with the provided variables
+        import asyncio
+
         formatted_template = template.format(**kwargs)
-        
-        # Make the API call
+
         try:
-            response = self.model(
-                formatted_template,
-                max_tokens=self.local_settings.max_tokens or 1024,
-                temperature=self.local_settings.temperature or 0.7,
-                stop=self.local_settings.stop_sequences or ["Human:", "Assistant:"]
-            )
-            
-            return response['choices'][0]['text']
+            # Run blocking LLM call in thread pool to avoid blocking event loop
+            result = await asyncio.to_thread(self._generate_sync, formatted_template)
+            return result
         except Exception as e:
             logger.error(f"Error generating text with local LLM: {e}")
             return "Error generating response with local model."
