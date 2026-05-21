@@ -209,8 +209,11 @@ class TestLLMReranker:
         # Act
         result = await reranker.process(test_docs, "test query")
 
-        # Assert - scores should be normalized (8/10 = 0.8)
-        assert result[0].score == 0.8
+        # Assert - scores are min-max normalized to [0, 1]
+        # LLM returns "3,8,5" -> normalized: 8 becomes 1.0 (max)
+        assert result[0].score == 1.0  # Highest score normalized to 1.0
+        assert 0.0 <= result[1].score <= 1.0
+        assert 0.0 <= result[2].score <= 1.0
 
     @pytest.mark.asyncio
     async def test_returns_original_on_parse_error(self, test_docs):

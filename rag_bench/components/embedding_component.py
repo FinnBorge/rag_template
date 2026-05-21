@@ -93,22 +93,34 @@ class MockEmbeddingComponent(EmbeddingComponent):
 
 class HuggingFaceEmbeddingComponent(EmbeddingComponent):
     """Component for generating embeddings using HuggingFace models."""
-    
+
     @inject
     def __init__(self, settings: Settings):
         self.settings = settings
         self.hf_settings = settings.huggingface
-        
+
         try:
             from sentence_transformers import SentenceTransformer
-            
+
             model_name = self.hf_settings.embedding_model
             self.model = SentenceTransformer(model_name)
-            logger.info(f"Initialized HuggingFace embeddings with model {model_name}")
+
+            # Get actual embedding dimension from model
+            self._embedding_dim = self.model.get_sentence_embedding_dimension()
+
+            logger.info(
+                f"Initialized HuggingFace embeddings with model {model_name} "
+                f"(dim={self._embedding_dim})"
+            )
         except Exception as e:
             logger.error(f"Error initializing HuggingFace embeddings: {e}")
             raise
-    
+
+    @property
+    def embedding_dim(self) -> int:
+        """Return the embedding dimension for this model."""
+        return self._embedding_dim
+
     def embed_query(self, text: str) -> List[float]:
         """Generate an embedding for a query string."""
         try:
@@ -116,9 +128,9 @@ class HuggingFaceEmbeddingComponent(EmbeddingComponent):
             return embedding.tolist()
         except Exception as e:
             logger.error(f"Error generating embedding for query: {e}")
-            # Return a zero vector as fallback
-            return [0.0] * 384  # Default dimension for many sentence-transformers models
-    
+            # Return zero vector with correct dimension for this model
+            return [0.0] * self._embedding_dim
+
     def embed_documents(self, documents: List[str]) -> List[List[float]]:
         """Generate embeddings for a list of documents."""
         try:
@@ -126,14 +138,13 @@ class HuggingFaceEmbeddingComponent(EmbeddingComponent):
             return [embedding.tolist() for embedding in embeddings]
         except Exception as e:
             logger.error(f"Error generating embeddings for documents: {e}")
-            # Return zero vectors as fallback
-            return [[0.0] * 384 for _ in range(len(documents))]
-    
-    # For backward compatibility with existing code
+            # Return zero vectors with correct dimension for this model
+            return [[0.0] * self._embedding_dim for _ in range(len(documents))]
+
     def get_embedding(self, text: str) -> List[float]:
         """Alias for embed_query."""
         return self.embed_query(text)
-        
+
     def get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
         """Alias for embed_documents."""
         return self.embed_documents(texts)

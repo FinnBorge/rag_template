@@ -7,7 +7,7 @@ import time
 from typing import List, Optional
 
 import uvicorn
-from fastapi import FastAPI, Depends, Request
+from fastapi import FastAPI, Depends, Request, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -177,23 +177,42 @@ def _build_error_response(
     return response
 
 
+MAX_QUERY_LENGTH = 10000  # Maximum query length in characters
+
+
 @app.get("/api/v1/query")
-async def query(
-    q: str,
-    conversation_id: Optional[str] = None,
-    rag_engine: RAGEngine = Depends(get_rag_engine)
+async def query_endpoint(
+    q: str = Query(
+        ...,
+        min_length=1,
+        max_length=MAX_QUERY_LENGTH,
+        description="The query string to search for",
+    ),
+    conversation_id: Optional[str] = Query(
+        None,
+        max_length=100,
+        description="Optional conversation ID for context",
+    ),
+    rag_engine: RAGEngine = Depends(get_rag_engine),
 ):
     """
     Query endpoint for testing the RAG engine.
 
     Args:
-        q: The query string
+        q: The query string (1-10000 characters)
         conversation_id: Optional conversation ID for context
 
     Returns:
         Answer with sources and metrics
     """
-    logger.info(f"Received query: {q}")
+    # Additional validation
+    if not q.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Query cannot be empty or whitespace only",
+        )
+
+    logger.info(f"Received query (length={len(q)})")
     start_time = time.time()
 
     try:

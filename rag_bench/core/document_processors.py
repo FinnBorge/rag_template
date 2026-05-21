@@ -184,13 +184,23 @@ class LLMReranker(DocumentPostProcessor):
             # Parse scores from the response
             try:
                 scores = [float(score.strip()) for score in response.split(",")]
-                
+
                 # Normalize scores to [0, 1] range
+                # LLM should return 0-10, but we normalize by actual max for robustness
                 if scores:
                     max_score = max(scores)
-                    if max_score > 0:
-                        scores = [score / 10 for score in scores]
-                
+                    min_score = min(scores)
+                    if max_score > min_score:
+                        # Normalize to 0-1 using actual range
+                        scores = [
+                            (score - min_score) / (max_score - min_score)
+                            for score in scores
+                        ]
+                    elif max_score > 0:
+                        # All scores equal and positive - normalize by 10 (expected range)
+                        scores = [min(score / 10.0, 1.0) for score in scores]
+                    # else: all zeros, leave as-is
+
                 # Make sure we have the right number of scores
                 if len(scores) != len(documents):
                     logger.warning(

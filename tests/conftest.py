@@ -6,9 +6,13 @@ Fixtures follow a layered approach:
 - Real components with test databases for integration tests
 - Full app client for E2E tests
 """
+import os
 import pytest
 from typing import List, Dict, Any
 from unittest.mock import AsyncMock, MagicMock
+
+# Set test settings before importing any rag_bench modules
+os.environ["SETTINGS_PATH"] = "settings-test.yaml"
 
 from langchain.schema import Document as LangchainDocument
 

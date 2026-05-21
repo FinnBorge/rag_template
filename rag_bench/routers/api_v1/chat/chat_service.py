@@ -3,6 +3,7 @@ from uuid import uuid4
 from datetime import datetime, timedelta
 from collections import OrderedDict
 import logging
+import threading
 
 from injector import inject, singleton
 from pydantic import BaseModel
@@ -38,12 +39,14 @@ class ConversationEntry:
 
 class ConversationStore:
     """
-    Bounded conversation store with TTL and max size limits.
+    Thread-safe bounded conversation store with TTL and max size limits.
 
     Prevents unbounded memory growth by:
     - Limiting max number of conversations
     - Expiring conversations after TTL
     - Using LRU eviction when at capacity
+
+    Thread-safety is ensured via a reentrant lock.
     """
 
     DEFAULT_MAX_SIZE = 1000
@@ -57,37 +60,40 @@ class ConversationStore:
         self._max_size = max_size
         self._ttl = ttl
         self._store: OrderedDict[str, ConversationEntry] = OrderedDict()
+        self._lock = threading.RLock()
 
     def get(self, conversation_id: str) -> Optional[Conversation]:
         """Get a conversation by ID, returns None if not found or expired."""
-        entry = self._store.get(conversation_id)
-        if entry is None:
-            return None
+        with self._lock:
+            entry = self._store.get(conversation_id)
+            if entry is None:
+                return None
 
-        if entry.is_expired(self._ttl):
-            del self._store[conversation_id]
-            logger.debug(f"Conversation {conversation_id} expired")
-            return None
+            if entry.is_expired(self._ttl):
+                del self._store[conversation_id]
+                logger.debug(f"Conversation {conversation_id} expired")
+                return None
 
-        # Move to end (most recently used) and update access time
-        self._store.move_to_end(conversation_id)
-        entry.touch()
-        return entry.conversation
+            # Move to end (most recently used) and update access time
+            self._store.move_to_end(conversation_id)
+            entry.touch()
+            return entry.conversation
 
     def set(self, conversation: Conversation) -> None:
         """Store a conversation, evicting oldest if at capacity."""
-        # Clean expired entries periodically
-        self._cleanup_expired()
+        with self._lock:
+            # Clean expired entries periodically
+            self._cleanup_expired()
 
-        # Evict oldest if at capacity
-        while len(self._store) >= self._max_size:
-            oldest_id, _ = self._store.popitem(last=False)
-            logger.debug(f"Evicted conversation {oldest_id} (LRU)")
+            # Evict oldest if at capacity
+            while len(self._store) >= self._max_size:
+                oldest_id, _ = self._store.popitem(last=False)
+                logger.debug(f"Evicted conversation {oldest_id} (LRU)")
 
-        self._store[conversation.id] = ConversationEntry(conversation)
+            self._store[conversation.id] = ConversationEntry(conversation)
 
     def _cleanup_expired(self) -> None:
-        """Remove expired entries (called periodically)."""
+        """Remove expired entries. Must be called with lock held."""
         expired_ids = [
             cid for cid, entry in self._store.items()
             if entry.is_expired(self._ttl)
@@ -99,7 +105,8 @@ class ConversationStore:
             logger.debug(f"Cleaned up {len(expired_ids)} expired conversations")
 
     def __len__(self) -> int:
-        return len(self._store)
+        with self._lock:
+            return len(self._store)
 
 
 @singleton

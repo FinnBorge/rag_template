@@ -1,42 +1,55 @@
 server:
   env_name: development
   port: 8000
+
 llm:
   mode: local
+
 embedding:
   mode: huggingface
+
 vectorstore:
   mode: pgvector
+
 rag:
   similarity_top_k: 3
   similarity_threshold: 0.7
+
 local_llm:
   model_path: models/default-model.gguf
   context_length: 4096
   n_gpu_layers: 0
   max_tokens: 1024
   temperature: 0.7
+
 huggingface:
   embedding_model: sentence-transformers/all-mpnet-base-v2
+
+# API keys must be set via environment variables - no defaults
 openai:
-  api_key: ${OPENAI_API_KEY:sk-dummy}
+  api_key: ${OPENAI_API_KEY}
   model: gpt-4o
   embedding_model: text-embedding-3-large
   api_base: ${OPENAI_API_BASE:https://api.openai.com/v1}
+
 anthropic:
-  api_key: ${ANTHROPIC_API_KEY:sk-ant-dummy}
+  api_key: ${ANTHROPIC_API_KEY}
   model: claude-3-opus-20240229
+
+# Database settings - use env vars in production
+# Development defaults provided; override with POSTGRES_USER, POSTGRES_PASSWORD in production
 postgres:
-  host: localhost
-  port: 5432
-  user: f
-  password: ''
-  database: rag_bench
+  host: ${POSTGRES_HOST:localhost}
+  port: ${POSTGRES_PORT:5432}
+  user: ${POSTGRES_USER:postgres}
+  password: ${POSTGRES_PASSWORD:}
+  database: ${POSTGRES_DB:rag_bench}
   schema_name: public
+
 pgvector:
-  host: localhost
-  port: 5432
-  user: f
-  password: ''
-  database: rag_bench
+  host: ${POSTGRES_HOST:localhost}
+  port: ${POSTGRES_PORT:5432}
+  user: ${POSTGRES_USER:postgres}
+  password: ${POSTGRES_PASSWORD:}
+  database: ${POSTGRES_DB:rag_bench}
   schema_name: public
