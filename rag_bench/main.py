@@ -4,14 +4,14 @@ Main entry point for the RAG benchmarking application.
 import logging
 import os
 import time
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 import uvicorn
 from fastapi import FastAPI, Depends, Request, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from injector import Injector, inject, singleton
+from injector import Injector, singleton
 
 from rag_bench.core.types import EmbeddingComponent, LLMComponent, VectorStoreComponent
 from rag_bench.core.document_processors import (
@@ -19,14 +19,12 @@ from rag_bench.core.document_processors import (
     SemanticReranker,
     LLMReranker,
     DiversityReranker,
-    ProcessingPipeline
 )
 from rag_bench.core.engine import RAGEngine, SourcedAnswer
 from rag_bench.core.query_enhancers import (
     HyponymExpansionEnhancer,
     LLMQueryExpansionEnhancer,
-    HybridQueryEnhancer,
-    StopWordRemovalEnhancer
+    StopWordRemovalEnhancer,
 )
 from rag_bench.core.types import QueryEnhancer, DocumentPostProcessor
 from rag_bench.dependency_injection import configure_injection
@@ -36,6 +34,8 @@ from rag_bench.settings.settings_loader import load_settings
 
 logger = logging.getLogger(__name__)
 
+MAX_QUERY_LENGTH = 10000  # Maximum query length in characters
+
 
 def create_settings() -> Settings:
     """Load and validate settings from configuration file."""
@@ -44,20 +44,18 @@ def create_settings() -> Settings:
     return Settings.model_validate(settings_dict)
 
 
-def create_injector(settings: Settings) -> Injector:
+def create_injector(app_settings: Settings) -> Injector:
     """Create dependency injection container."""
     return Injector([
-        lambda binder: binder.bind(Settings, to=settings, scope=singleton),
+        lambda binder: binder.bind(Settings, to=app_settings, scope=singleton),
         configure_injection
     ])
 
 
-def get_cors_origins(settings: Settings) -> List[str]:
+def get_cors_origins(app_settings: Settings) -> List[str]:
     """Get CORS origins based on environment."""
-    if settings.server.env_name == "production":
-        # In production, this should be configured via settings
+    if app_settings.server.env_name == "production":
         return ["https://your-production-domain.com"]
-    # Development mode - allow all origins
     return ["*"]
 
 
@@ -69,7 +67,7 @@ injector = create_injector(settings)
 app = FastAPI(
     title="RAG Benchmarking System",
     description="A system for benchmarking and evaluating RAG pipelines",
-    version="0.1.0"
+    version="0.1.0",
 )
 
 # Mount static files directory
@@ -100,7 +98,7 @@ async def inject_injector(request: Request, call_next):
     return response
 
 
-# Add CORS middleware with environment-aware origins
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(settings),
@@ -113,16 +111,65 @@ app.add_middleware(
 app.include_router(chat_router, prefix="/api/v1")
 
 
+async def check_component_health(component: Any, name: str) -> Dict[str, Any]:
+    """Check health of a component by attempting a basic operation."""
+    try:
+        if hasattr(component, "health_check"):
+            # Use explicit health check if available
+            is_healthy = await component.health_check()
+            return {"status": "healthy" if is_healthy else "unhealthy"}
+        # Component exists and was initialized successfully
+        return {"status": "healthy"}
+    except Exception as e:
+        logger.warning(f"Health check failed for {name}: {e}")
+        return {"status": "unhealthy", "error": str(e)}
+
+
 @app.get("/health")
 async def health():
-    """Health check endpoint with component status."""
+    """
+    Health check endpoint with actual component status.
+
+    Returns status of each component and overall system health.
+    """
+    component_status = {}
+    all_healthy = True
+
+    try:
+        # Check LLM component
+        llm = injector.get(LLMComponent)
+        component_status["llm"] = await check_component_health(llm, "llm")
+        if component_status["llm"]["status"] != "healthy":
+            all_healthy = False
+    except Exception as e:
+        component_status["llm"] = {"status": "unavailable", "error": str(e)}
+        all_healthy = False
+
+    try:
+        # Check embedding component
+        embedding = injector.get(EmbeddingComponent)
+        component_status["embedding"] = await check_component_health(embedding, "embedding")
+        if component_status["embedding"]["status"] != "healthy":
+            all_healthy = False
+    except Exception as e:
+        component_status["embedding"] = {"status": "unavailable", "error": str(e)}
+        all_healthy = False
+
+    try:
+        # Check vector store component
+        vectorstore = injector.get(VectorStoreComponent)
+        component_status["vectorstore"] = await check_component_health(vectorstore, "vectorstore")
+        if component_status["vectorstore"]["status"] != "healthy":
+            all_healthy = False
+    except Exception as e:
+        component_status["vectorstore"] = {"status": "unavailable", "error": str(e)}
+        all_healthy = False
+
+    overall_status = "healthy" if all_healthy else "degraded"
+
     return {
-        "status": "ok",
-        "components": {
-            "llm": True,
-            "embedding": True,
-            "vectorstore": True,
-        }
+        "status": overall_status,
+        "components": component_status,
     }
 
 
@@ -156,7 +203,6 @@ def _build_query_response(
 
 
 def _build_error_response(
-    query: str,
     conversation_id: Optional[str],
     total_time_ms: float,
     error: Optional[str] = None,
@@ -177,9 +223,6 @@ def _build_error_response(
     return response
 
 
-MAX_QUERY_LENGTH = 10000  # Maximum query length in characters
-
-
 @app.get("/api/v1/query")
 async def query_endpoint(
     q: str = Query(
@@ -196,7 +239,7 @@ async def query_endpoint(
     rag_engine: RAGEngine = Depends(get_rag_engine),
 ):
     """
-    Query endpoint for testing the RAG engine.
+    Query endpoint for the RAG engine.
 
     Args:
         q: The query string (1-10000 characters)
@@ -205,7 +248,6 @@ async def query_endpoint(
     Returns:
         Answer with sources and metrics
     """
-    # Additional validation
     if not q.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -220,35 +262,39 @@ async def query_endpoint(
         total_time_ms = (time.time() - start_time) * 1000
 
         if not answer or not answer.answer:
-            logger.warning(f"No answer generated for query: {q}")
-            return _build_error_response(q, conversation_id, total_time_ms)
+            logger.warning(f"No answer generated for query (length={len(q)})")
+            return _build_error_response(conversation_id, total_time_ms)
 
         return _build_query_response(answer, conversation_id, total_time_ms)
 
     except Exception as e:
         logger.error(f"Error generating answer: {e}")
         total_time_ms = (time.time() - start_time) * 1000
-        return _build_error_response(q, conversation_id, total_time_ms, str(e))
+        return _build_error_response(conversation_id, total_time_ms, str(e))
 
 
 def setup_query_enhancers(
     app_settings: Settings,
-    llm_component: LLMComponent
+    llm_component: LLMComponent,
 ) -> List[QueryEnhancer]:
-    """Set up query enhancers based on settings."""
-    # Hyponym map - in production, load from config file
-    hyponym_map = {
-        "medication": ["drug", "pill", "capsule", "tablet", "prescription"],
-        "doctor": ["physician", "specialist", "clinician", "surgeon", "practitioner"],
-        "symptoms": ["signs", "indications", "manifestations"],
-    }
+    """
+    Set up query enhancers based on configuration.
 
-    enhancers: List[QueryEnhancer] = [
-        StopWordRemovalEnhancer(),
-        HyponymExpansionEnhancer(hyponym_map),
-    ]
+    Enhancers are configured via settings.query_enhancement.
+    """
+    enhancers: List[QueryEnhancer] = []
+    qe_settings = app_settings.query_enhancement
 
-    if app_settings.llm.mode != "mock":
+    # Stop word removal
+    if qe_settings.use_stop_word_removal:
+        enhancers.append(StopWordRemovalEnhancer())
+
+    # Hyponym expansion (uses config-driven hyponym map)
+    if qe_settings.use_hyponym_expansion and qe_settings.hyponym_map:
+        enhancers.append(HyponymExpansionEnhancer(qe_settings.hyponym_map))
+
+    # LLM-based query expansion
+    if qe_settings.use_llm_expansion and app_settings.llm.mode != "mock":
         enhancers.append(LLMQueryExpansionEnhancer(llm_component))
 
     return enhancers
@@ -257,7 +303,7 @@ def setup_query_enhancers(
 def setup_document_processors(
     app_settings: Settings,
     embedding_component: EmbeddingComponent,
-    llm_component: LLMComponent
+    llm_component: LLMComponent,
 ) -> List[DocumentPostProcessor]:
     """Set up document post-processors based on settings."""
     processors: List[DocumentPostProcessor] = [
@@ -277,7 +323,8 @@ def initialize_components(app_settings: Settings, app_injector: Injector):
     """
     Initialize RAG components. Falls back to mock mode on failure.
 
-    Returns a new settings object if fallback was needed (immutable pattern).
+    Returns a tuple of (settings, query_enhancers, document_processors).
+    Uses immutable pattern - returns new settings if fallback was needed.
     """
     try:
         llm_component = app_injector.get(LLMComponent)
@@ -292,15 +339,14 @@ def initialize_components(app_settings: Settings, app_injector: Injector):
 
     except Exception as e:
         logger.error(f"Error initializing components: {e}")
-        logger.error("\nTROUBLESHOOTING STEPS:")
-        logger.error("1. Check that the model file exists in the models directory")
-        logger.error("2. Run 'poetry run python initialize_models.py' to download the model")
-        logger.error("3. Or set 'llm.mode: mock' in settings.yaml for a mock implementation")
-        logger.error("4. Run 'poetry run python setup_all.py' for complete setup\n")
+        logger.error("\nTROUBLESHOOTING:")
+        logger.error("1. Check model file exists in models directory")
+        logger.error("2. Run 'poetry run python initialize_models.py'")
+        logger.error("3. Or set 'llm.mode: mock' in settings.yaml\n")
 
         logger.warning("Using mock components as fallback...")
 
-        # Create new settings with mock mode (immutable - don't modify original)
+        # Create new settings with mock mode (immutable pattern)
         mock_settings_dict = app_settings.model_dump()
         mock_settings_dict["llm"]["mode"] = "mock"
         mock_settings_dict["embedding"]["mode"] = "mock"
@@ -331,7 +377,7 @@ def run_server():
         "rag_bench.main:app",
         host="0.0.0.0",
         port=settings.server.port,
-        reload=settings.server.env_name == "development"
+        reload=settings.server.env_name == "development",
     )
 
 

@@ -162,29 +162,48 @@ class ChatService:
         query: str,
         metadata: ChatMetadata,
         include_document_text: bool = False,
-    ) -> Generator[str, None, None]:
-        """Stream a response for a given query."""
-        # Generate the full response first (in a real implementation this would be streaming)
+    ) -> AsyncGenerator[str, None]:
+        """
+        Stream a response for a given query.
+
+        NOTE: This is simulated streaming - the full response is generated first,
+        then chunked for delivery. True token-by-token streaming requires LLM
+        provider support (e.g., OpenAI streaming API).
+
+        For benchmarking purposes, use generate_response() instead to get
+        accurate timing metrics.
+
+        Args:
+            query: The user's question
+            metadata: Request metadata
+            include_document_text: Whether to include full document text
+
+        Yields:
+            JSON-encoded ChatResponse objects with incremental answer text
+        """
+        # Generate complete response first (simulated streaming)
         response = await self.generate_response(query, metadata, include_document_text)
-        
-        # Split the answer into chunks for demonstration
-        chunks = [response.answer[i:i+20] for i in range(0, len(response.answer), 20)]
-        
-        # Return the streaming response
-        for i, chunk in enumerate(chunks):
-            is_last = i == len(chunks) - 1
-            
-            # Create a partial response with the current chunk
+
+        # Yield chunks to simulate streaming
+        chunk_size = 20
+        answer = response.answer
+        total_chunks = (len(answer) + chunk_size - 1) // chunk_size
+
+        for i in range(total_chunks):
+            start = i * chunk_size
+            end = min(start + chunk_size, len(answer))
+            is_last = (i == total_chunks - 1)
+
             partial_response = ChatResponse(
                 id=response.id,
-                answer=chunk if i == 0 else response.answer[:i*20+len(chunk)],
+                answer=answer[:end],  # Accumulate answer progressively
                 question=query,
                 metadata=metadata,
                 documents=response.documents if is_last else [],
-                status="completed" if is_last else "pending",
-                model=response.model
+                status="completed" if is_last else "streaming",
+                model=response.model,
             )
-            
+
             yield partial_response.model_dump_json() + "\n\n"
     
     def _create_response(
