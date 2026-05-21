@@ -4,7 +4,7 @@ Unit tests for ChatService and ConversationStore.
 Tests verify conversation management, TTL expiration, and LRU eviction.
 """
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 from rag_bench.core.types import Conversation
@@ -44,7 +44,7 @@ class TestConversationEntry:
         conversation = Conversation()
         entry = ConversationEntry(conversation)
         # Set last_accessed to the past
-        entry.last_accessed = datetime.utcnow() - timedelta(seconds=20)
+        entry.last_accessed = datetime.now(timezone.utc) - timedelta(seconds=20)
         ttl = timedelta(seconds=10)
 
         # Assert - entry older than TTL should be expired
@@ -85,7 +85,7 @@ class TestConversationStore:
 
         # Manually expire the entry by setting last_accessed to the past
         store._store[conversation.id].last_accessed = (
-            datetime.utcnow() - timedelta(seconds=15)
+            datetime.now(timezone.utc) - timedelta(seconds=15)
         )
 
         # Act
@@ -158,7 +158,7 @@ class TestConversationStore:
 
         # Expire conv1 manually
         store._store[conv1.id].last_accessed = (
-            datetime.utcnow() - timedelta(seconds=15)
+            datetime.now(timezone.utc) - timedelta(seconds=15)
         )
 
         # Act - cleanup is called during set

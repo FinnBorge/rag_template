@@ -8,9 +8,23 @@ from pathlib import Path
 from typing import Any, TextIO
 
 import yaml
-from pydantic.utils import deep_update
 
 logger = logging.getLogger(__name__)
+
+
+def deep_update(mapping: dict[str, Any], *updating_mappings: dict[str, Any]) -> dict[str, Any]:
+    """Deep merge dictionaries, with later values taking precedence.
+
+    This is a Pydantic v2 compatible replacement for pydantic.utils.deep_update.
+    """
+    updated = {**mapping}
+    for updating_mapping in updating_mappings:
+        for k, v in updating_mapping.items():
+            if k in updated and isinstance(updated[k], dict) and isinstance(v, dict):
+                updated[k] = deep_update(updated[k], v)
+            else:
+                updated[k] = v
+    return updated
 
 PROJECT_ROOT_PATH: Path = Path(__file__).parents[2]  # Root of the project
 

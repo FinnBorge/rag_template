@@ -1,6 +1,6 @@
-from typing import List, Protocol, Optional, Dict, Any, Union
+from typing import List, Protocol, Optional, Dict, Any, Union, Tuple
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from langchain.schema import Document as LangchainDocument
@@ -83,7 +83,7 @@ class Message(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     role: str
     content: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     class Config:
         json_encoders = {
@@ -96,15 +96,23 @@ class Conversation(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     messages: List[Message] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
-    def add_message(self, role: str, content: str) -> Message:
-        """Add a message to the conversation."""
+    def with_message(self, role: str, content: str) -> Tuple["Conversation", Message]:
+        """Add a message and return new Conversation + the Message (immutable).
+
+        Returns:
+            Tuple of (new_conversation, added_message)
+        """
         message = Message(role=role, content=content)
-        self.messages.append(message)
-        self.updated_at = datetime.utcnow()
-        return message
+        return (
+            self.model_copy(update={
+                "messages": [*self.messages, message],
+                "updated_at": datetime.now(timezone.utc),
+            }),
+            message
+        )
     
     def get_history(self, limit: Optional[int] = None) -> List[Message]:
         """Get the conversation history, optionally limited to the last N messages."""

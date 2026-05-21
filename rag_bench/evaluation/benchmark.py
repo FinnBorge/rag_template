@@ -12,7 +12,7 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from rag_bench.core.types import LLMComponent
-from rag_bench.core.engine import RAGEngine, SourcedAnswer
+from rag_bench.core.engine import RAGEngine, SourcedAnswer, RAGHooks
 from rag_bench.core.types import DocumentWithScore
 from rag_bench.evaluation.metrics import (
     QueryMetrics, 
@@ -75,7 +75,7 @@ class BenchmarkRunner:
             with open(self.config.evaluation_set_path, 'r') as f:
                 data = json.load(f)
             
-            return EvaluationSet.parse_obj(data)
+            return EvaluationSet.model_validate(data)
         except Exception as e:
             logger.error(f"Error loading evaluation set: {str(e)}")
             raise
@@ -102,42 +102,23 @@ class BenchmarkRunner:
         
         # Start tracking the query
         metrics_collector.start_query(query_id, query)
-        
+
         try:
-            # Patch the RAG engine to collect metrics
-            original_retrieve = self.rag_engine._retrieve_documents
-            original_post_process = self.rag_engine._post_process_documents
-            original_generate = self.rag_engine._generate_answer
-            
-            # Patched methods to collect metrics
-            async def patched_retrieve(query):
-                metrics_collector.start_retrieval()
-                docs = await original_retrieve(query)
-                metrics_collector.end_retrieval(docs)
-                return docs
-            
-            async def patched_post_process(docs, query):
-                processed_docs = await original_post_process(docs, query)
-                return processed_docs
-            
-            async def patched_generate(query, docs):
-                metrics_collector.start_generation()
-                answer = await original_generate(query, docs)
-                metrics_collector.end_generation(docs)
-                return answer
-            
-            # Apply the patches
-            self.rag_engine._retrieve_documents = patched_retrieve
-            self.rag_engine._post_process_documents = patched_post_process
-            self.rag_engine._generate_answer = patched_generate
-            
-            # Generate answer
-            answer = await self.rag_engine.generate_answer(query)
-            
-            # Restore original methods
-            self.rag_engine._retrieve_documents = original_retrieve
-            self.rag_engine._post_process_documents = original_post_process
-            self.rag_engine._generate_answer = original_generate
+            # Use hooks to collect metrics instead of monkey-patching
+            hooks = RAGHooks(
+                on_retrieval_start=metrics_collector.start_retrieval,
+                on_retrieval_end=metrics_collector.end_retrieval,
+                on_generation_start=metrics_collector.start_generation,
+                on_generation_end=metrics_collector.end_generation,
+            )
+
+            # Temporarily set hooks on engine
+            original_hooks = self.rag_engine.hooks
+            self.rag_engine.hooks = hooks
+            try:
+                answer = await self.rag_engine.generate_answer(query)
+            finally:
+                self.rag_engine.hooks = original_hooks
             
             # Get metrics
             metrics = metrics_collector.get_metrics()
@@ -148,9 +129,11 @@ class BenchmarkRunner:
                     metrics_collector.retrieved_docs,
                     relevant_doc_ids
                 )
-                metrics.retrieval_precision = precision_recall["precision"]
-                metrics.retrieval_recall = precision_recall["recall"]
-            
+                metrics = metrics.model_copy(update={
+                    "retrieval_precision": precision_recall["precision"],
+                    "retrieval_recall": precision_recall["recall"],
+                })
+
             # Add LLM-based evaluation if enabled
             if self.config.use_llm_evaluation and expected_answer and self.llm_evaluator:
                 eval_metrics = await self.llm_evaluator.evaluate_answer(
@@ -158,25 +141,21 @@ class BenchmarkRunner:
                     actual_answer=answer.answer,
                     expected_answer=expected_answer
                 )
-                
-                if "correctness" in eval_metrics:
-                    metrics.answer_correctness = eval_metrics["correctness"]
-                if "completeness" in eval_metrics:
-                    metrics.answer_completeness = eval_metrics["completeness"]
-                if "conciseness" in eval_metrics:
-                    metrics.answer_conciseness = eval_metrics["conciseness"]
-                if "groundedness" in eval_metrics:
-                    metrics.answer_groundedness = eval_metrics["groundedness"]
-                if "helpfulness" in eval_metrics:
-                    metrics.answer_helpfulness = eval_metrics["helpfulness"]
-                
+
+                # Build immutable update dict from eval_metrics
+                metric_updates: Dict[str, Any] = {}
+                metric_keys = ["correctness", "completeness", "conciseness", "groundedness", "helpfulness"]
+                for key in metric_keys:
+                    if key in eval_metrics:
+                        metric_updates[f"answer_{key}"] = eval_metrics[key]
+
                 # Calculate overall quality as average of all metrics
-                quality_metrics = [
-                    v for k, v in eval_metrics.items() 
-                    if k in ["correctness", "completeness", "conciseness", "groundedness", "helpfulness"]
-                ]
-                if quality_metrics:
-                    metrics.answer_quality = sum(quality_metrics) / len(quality_metrics)
+                quality_values = [eval_metrics[k] for k in metric_keys if k in eval_metrics]
+                if quality_values:
+                    metric_updates["answer_quality"] = sum(quality_values) / len(quality_values)
+
+                if metric_updates:
+                    metrics = metrics.model_copy(update=metric_updates)
             
             return answer, metrics
             
@@ -418,7 +397,7 @@ async def run_benchmark_cli():
             config_data = json.load(f)
         
         # Parse configuration
-        config = BenchmarkConfig.parse_obj(config_data)
+        config = BenchmarkConfig.model_validate(config_data)
         
         # Dynamic import to get the injector and necessary components
         spec = importlib.util.spec_from_file_location("main", "rag_bench/main.py")

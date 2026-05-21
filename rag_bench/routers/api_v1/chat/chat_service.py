@@ -1,6 +1,6 @@
 from typing import List, Optional, Dict, Any, Generator, AsyncGenerator
 from uuid import uuid4
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import OrderedDict
 import logging
 import threading
@@ -26,15 +26,15 @@ class ConversationEntry:
 
     def __init__(self, conversation: Conversation):
         self.conversation = conversation
-        self.last_accessed = datetime.utcnow()
+        self.last_accessed = datetime.now(timezone.utc)
 
     def touch(self) -> None:
         """Update last accessed time."""
-        self.last_accessed = datetime.utcnow()
+        self.last_accessed = datetime.now(timezone.utc)
 
     def is_expired(self, ttl: timedelta) -> bool:
         """Check if this entry has expired."""
-        return datetime.utcnow() - self.last_accessed > ttl
+        return datetime.now(timezone.utc) - self.last_accessed > ttl
 
 
 class ConversationStore:
@@ -145,14 +145,17 @@ class ChatService:
         conversation_id = metadata.conversation_id
         conversation = self._get_or_create_conversation(conversation_id)
         
-        # Add user message to conversation
-        conversation.add_message("user", query)
-        
+        # Add user message to conversation (immutable update)
+        conversation, _ = conversation.with_message("user", query)
+
         # Generate answer
         result = await self.rag_engine.generate_answer(query, conversation_id)
-        
-        # Add assistant message to conversation
-        conversation.add_message("assistant", result.answer)
+
+        # Add assistant message to conversation (immutable update)
+        conversation, _ = conversation.with_message("assistant", result.answer)
+
+        # Store updated conversation
+        self._conversations.set(conversation)
         
         # Create response
         return self._create_response(query, result, metadata, include_document_text)

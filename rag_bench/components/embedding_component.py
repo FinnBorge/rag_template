@@ -12,6 +12,16 @@ from rag_bench.core.types import EmbeddingComponent
 logger = logging.getLogger(__name__)
 
 
+class EmbeddingError(Exception):
+    """Raised when embedding generation fails.
+
+    This error propagates embedding failures to higher levels instead of
+    silently returning zero vectors. Handle at the RAG engine level for
+    graceful degradation.
+    """
+    pass
+
+
 class OpenAIEmbeddingComponent(EmbeddingComponent):
     """Component for generating embeddings using OpenAI APIs."""
     
@@ -36,22 +46,28 @@ class OpenAIEmbeddingComponent(EmbeddingComponent):
             raise
     
     def embed_query(self, text: str) -> List[float]:
-        """Generate an embedding for a query string."""
+        """Generate an embedding for a query string.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+        """
         try:
             return self.embeddings.embed_query(text)
         except Exception as e:
             logger.error(f"Error generating embedding for query: {e}")
-            # Return a zero vector as fallback
-            return [0.0] * 1536
-    
+            raise EmbeddingError(f"Failed to embed query: {e}") from e
+
     def embed_documents(self, documents: List[str]) -> List[List[float]]:
-        """Generate embeddings for a list of documents."""
+        """Generate embeddings for a list of documents.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+        """
         try:
             return self.embeddings.embed_documents(documents)
         except Exception as e:
             logger.error(f"Error generating embeddings for documents: {e}")
-            # Return zero vectors as fallback
-            return [[0.0] * 1536 for _ in range(len(documents))]
+            raise EmbeddingError(f"Failed to embed documents: {e}") from e
             
     # For backward compatibility with existing code
     def get_embedding(self, text: str) -> List[float]:
@@ -122,24 +138,30 @@ class HuggingFaceEmbeddingComponent(EmbeddingComponent):
         return self._embedding_dim
 
     def embed_query(self, text: str) -> List[float]:
-        """Generate an embedding for a query string."""
+        """Generate an embedding for a query string.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+        """
         try:
             embedding = self.model.encode(text)
             return embedding.tolist()
         except Exception as e:
             logger.error(f"Error generating embedding for query: {e}")
-            # Return zero vector with correct dimension for this model
-            return [0.0] * self._embedding_dim
+            raise EmbeddingError(f"Failed to embed query: {e}") from e
 
     def embed_documents(self, documents: List[str]) -> List[List[float]]:
-        """Generate embeddings for a list of documents."""
+        """Generate embeddings for a list of documents.
+
+        Raises:
+            EmbeddingError: If embedding generation fails.
+        """
         try:
             embeddings = self.model.encode(documents)
             return [embedding.tolist() for embedding in embeddings]
         except Exception as e:
             logger.error(f"Error generating embeddings for documents: {e}")
-            # Return zero vectors with correct dimension for this model
-            return [[0.0] * self._embedding_dim for _ in range(len(documents))]
+            raise EmbeddingError(f"Failed to embed documents: {e}") from e
 
     def get_embedding(self, text: str) -> List[float]:
         """Alias for embed_query."""
